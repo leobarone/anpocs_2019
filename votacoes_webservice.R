@@ -5,6 +5,8 @@ library(purrr)
 library(httr)
 library(stringr)
 library(readr)
+library(rstan)
+library(forcats)
 
 rm(list=ls())
 
@@ -143,7 +145,6 @@ votacao_proposicao <- function(id_proposicao){
     xml_attrs() %>%
     map(as.list)
   
-
   bancadas <- map(
     1:length(meta),
     function(x){
@@ -243,10 +244,6 @@ votos <- lista_votos_2019 %>%
   }) %>%
   reduce(bind_rows)
 
-save.image("votacoes_2019.RData")
-rm(list = ls())
-load("votacoes_2019.RData")
-
 bancadas %>%
   group_by(bancada) %>% 
   summarise() %>% 
@@ -281,7 +278,7 @@ votos <- votos %>%
 
 votos %>%
   group_by(id_parlamentar) %>%
-  count  %>%
+  count %>%
   arrange(-n)
 
 votos %>% 
@@ -295,6 +292,7 @@ votos %>%
 # save.image("votacoes_2019.RData")
 rm(list=ls())
 load('votacoes_2019.RData')
+setwd(3697560)
 
 d <- votos %>% 
   filter(voto %in% c('Sim', 'Não', 'Obstrução', 'Abstenção','-'),
@@ -340,23 +338,39 @@ d <- d %>%
   bind_rows(indisciplinado,
             disciplinado)
 
+posicoes_iniciais <- ids_parlamentar %>%
+  mutate(x = NA_real_,
+         init = 0.5) %>% 
+  bind_rows(data.frame(x = c(0, 1),
+                       i = ids_identificacao,
+                       id_parlamentar = c(999998, 999999),
+                       init = c(0.5, 0.5)))
+
+d %>% 
+  group_by(id_parlamentar) %>% 
+  summarise(votacoes = n(),
+            disciplina = sum(voto)) %>%
+  left_join(parlamentares, by = 'id_parlamentar') %>% 
+  arrange(-pct_disciplina) %>% 
+  View()
+
 d_stan <-
   within(list(), {
     
     # Dados das votacoes e parametros
     y <- d$voto                     # votos
-    i <- d$i                        # id dos parlamentares
-    j <- d$j                        # id das votacoes
-    l <- length(y)                  # numero total de votos
+    i_y <- d$i                      # id dos parlamentares
+    j_y <- d$j                      # id das votacoes
     n <- max(d$i)                   # numero de parlamentares
     k <- max(d$j)                   # numero de votacoes
+    l <- nrow(d)                    # numero total de votos
     n_theta <- nrow(ids_parlamentar)# numero de pontos livres
     id_theta <- ids_parlamentar$i   # id de pontos livres
     
     # Identificacao
     n_fixo <- 2                     # numero de pontos fixos
     id_fixo <- ids_identificacao    # id dos pontos fixos
-    posicoa_fixo <- c(0, 1)         # posicao dos pontos fixos
+    fixos <- c(0, 1)                # posicao dos pontos fixos
     
     # Prioris
     alfa_mean <- 0                  # priori para alfa - media
@@ -368,4 +382,105 @@ d_stan <-
     theta0_sd <- 10                 # priori para theta0 - desvpad
   })
 
-str(d_stan)
+d_init <- list(list(theta = runif(781)))
+
+# modelo_base <- stan_model("modelo_base.stan")
+
+modelo_base_fit <-
+  sampling(modelo_base,
+           data = d_stan,
+           chains = 1, iter = 500,
+           init = d_init,
+           refresh = 100)
+
+parlamentares <- votos %>% 
+  filter(voto %in% c('Sim', 'Não', 'Obstrução', 'Abstenção','-'),
+         orientacao %in% c('Sim', 'Não', 'Obstrução')) %>% 
+  mutate(voto = if_else(voto == orientacao, 1, 0),
+         voto = replace(voto, voto %in% c('Abstenção', '-'), 1)) %>% 
+  mutate(id_parlamentar = as.numeric(id_parlamentar)) %>% 
+  group_by(id_parlamentar, parlamentar) %>% 
+  summarise(partido = first(partido),
+            votos_totais = n(),
+            votos_disciplinados = sum(voto),
+            pct_disciplina = votos_disciplinados/votos_totais)
+
+
+partidos <- votos %>% 
+  filter(voto %in% c('Sim', 'Não', 'Obstrução', 'Abstenção','-'),
+         orientacao %in% c('Sim', 'Não', 'Obstrução')) %>% 
+  mutate(voto = if_else(voto == orientacao, 1, 0),
+         voto = replace(voto, voto %in% c('Abstenção', '-'), 1)) %>% 
+  mutate(id_parlamentar = as.numeric(id_parlamentar)) %>% 
+  group_by(partido) %>% 
+  summarise(votos_totais = n(),
+            votos_disciplinados = sum(voto),
+            pct_disciplina = votos_disciplinados/votos_totais) %>% 
+  arrange(-pct_disciplina)
+
+
+
+sumario <-
+  bind_cols(ids_parlamentar,
+            as_tibble(
+              summary(modelo_base_fit,
+                      par = "theta")$summary)
+            ) %>% 
+  left_join(parlamentares, by = 'id_parlamentar') %>% 
+  mutate(parlamentar = fct_reorder(parlamentar, mean))
+
+sumario %>% 
+  select(pct_disciplina, mean, parlamentar, 
+         votos_disciplinados, votos_totais) %>% 
+  arrange(-pct_disciplina)
+
+sumario %>% 
+  select(pct_disciplina, mean, parlamentar, partido,
+         votos_disciplinados, votos_totais) %>% 
+  arrange(pct_disciplina)
+
+
+sumario %>% 
+  ggplot() +
+  geom_density(aes(x = mean))
+
+sumario %>% 
+  ggplot() +
+  geom_density(aes(x = pct_disciplina))
+
+sumario %>% 
+  group_by(partido) %>% 
+  summarise(mean = mean(mean),
+            q025= quantile(mean, p = 0.025),
+            q975= quantile(mean, p = 0.975)) %>% 
+  mutate(partido = fct_reorder(partido, mean)) %>% 
+  ggplot(
+    aes(x = partido, 
+        y = mean,
+        ymin = q025, 
+        ymax = q975,
+        color = partido)) +
+  geom_pointrange() +
+  coord_flip() +
+  labs(y = expression(theta[i]), x = "", colour = "Partido") +
+  theme(legend.position = "bottom")
+
+sumario %>% 
+  group_by(partido) %>% 
+  summarise(mean = mean(pct_disciplina),
+            q025= quantile(pct_disciplina, p = 0.025),
+            q975= quantile(pct_disciplina, p = 0.975)) %>% 
+  mutate(partido = fct_reorder(partido, mean)) %>% 
+  ggplot(
+    aes(x = partido, 
+        y = mean,
+        ymin = q025, 
+        ymax = q975,
+        color = partido)) +
+  geom_pointrange() +
+  coord_flip() +
+  labs(y = expression(theta[i]), x = "", colour = "Partido") +
+  theme(legend.position = "bottom")
+
+rm(list=ls())
+load('teste_stan.RData')

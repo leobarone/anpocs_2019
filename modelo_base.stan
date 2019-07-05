@@ -1,15 +1,19 @@
 data {
+  // Dados do modelo
   int n;
   int k;
-  int<lower = 0, upper = n * k> l;
-  int i[l];
-  int j[l];
-  int y[l];
-  int n_fixo;
-  int id_fixo[n_fixo];
-  vector[n_fixo] posicao_fixo;
+  int<lower = 0, upper = n * k> m;
+  int id_parlamentar[m];
+  int id_votacao[m];
+  int voto[m];
+  // Parlamentares fixos
+  int n_fixos;
+  int id_fixos[n_fixos];
+  vector[n_fixos] fixos;
+  // Parlamentares nao-fixos 
   int n_theta;
   int id_theta[n_theta];
+  // Prioris
   real alfa_mean;
   real<lower = 0.> alfa_sd;
   real beta_mean;
@@ -19,33 +23,33 @@ data {
   real tau_scale;
 }
 parameters {
-  vector[K] alfa;          // 'dificuldade' da votacao
-  vector[K] beta;          // 'discriminacao' da votacao
-  vector[n_theta] theta;   // posicoes desconhecidas
+  vector[k] alfa;          // 'dificuldade' da votacao
+  vector[k] beta;          // 'discriminacao' da votacao
+  vector<lower = 0., upper = 1>[n_theta] theta;   // posicoes desconhecidas
   real<lower = 0.> tau;    // hyperpriori
-  real<lower = 0.> zeta;   // hyperpriori
+  real<lower = 0.> theta0;   // hyperpriori
 }
 transformed parameters {
-  vector[l] mu;
+  vector[m] mu;
   vector[n] x;
-  x[id_theta] = x_theta;
-  x[id_fixo] = x_fixos;
-  for (m in 1:l) {
-    mu[m] = alfa[j[m]] + beta[j[m]] * x[i[m]];
+  x[id_theta] = theta;
+  x[id_fixos] = fixos;
+  for (i in 1:m) {
+    mu[i] = alfa[id_votacao[i]] + beta[id_votacao[i]] * x[id_parlamentar[i]];
   }
 }
 model {
   alfa ~ normal(alfa_mean, alfa_sd);
   beta ~ normal(beta_mean, beta_sd);
-  xi_theta ~ normal(zeta, tau);
-  xi_fixos ~ normal(zeta, tau);
-  zeta ~ normal(zeta_mean, zeta_sd);
+  theta ~ normal(theta0, tau);
+  fixos ~ normal(theta0, tau);
+  theta0 ~ normal(theta0_mean, theta0_sd);
   tau ~ cauchy(0., tau_scale);
-  y ~ bernoulli_logit(mu);
+  voto ~ bernoulli_logit(mu);
 }
 generated quantities {
-  vector[l] log_lik;
-  for (m in 1:l) {
-    log_lik[m] = bernoulli_logit_lpmf(y[m] | mu[m]);
+  vector[m] log_lik;
+  for (i in 1:m) {
+    log_lik[i] = bernoulli_logit_lpmf(voto[i] | mu[i]);
   }
 }
